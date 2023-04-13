@@ -345,7 +345,8 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
     @torch.no_grad()
     def __call__(
         self,
-        prompt: Union[str, List[str]] = None,
+        prompt_instruct: Union[str, List[str]] = None,
+        prompt_control: Union[str, List[str]] = None,
         image: Union[torch.FloatTensor, PIL.Image.Image, List[torch.FloatTensor], List[PIL.Image.Image]] = None,
         control_image: Union[torch.FloatTensor, PIL.Image.Image, List[torch.FloatTensor], List[PIL.Image.Image]] = None,
         height: Optional[int] = None,
@@ -358,7 +359,7 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         eta: float = 0.0,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         latents: Optional[torch.FloatTensor] = None,
-        prompt_embeds: Optional[torch.FloatTensor] = None,
+        # prompt_embeds: Optional[torch.FloatTensor] = None,
         negative_prompt_embeds: Optional[torch.FloatTensor] = None,
         output_type: Optional[str] = "pil",
         return_dict: bool = True,
@@ -368,28 +369,28 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         controlnet_conditioning_scale: float = 1.0,
     ):
         # 0. Default height and width to unet
-        height, width = self._default_height_width(height, width, control_image)
+        height, width = self._default_height_width(height, width, image)
 
         # 1. Check inputs. Raise error if not correct
         self.check_inputs(
-            prompt,
+            prompt_instruct,
             image,
             height,
             width,
             callback_steps,
             negative_prompt,
-            prompt_embeds,
+            None,
             negative_prompt_embeds,
             controlnet_conditioning_scale,
         )
 
         # 2. Define call parameters
-        if prompt is not None and isinstance(prompt, str):
+        if prompt_instruct is not None and isinstance(prompt_instruct, str):
+            assert prompt_control is not None and not isinstance(prompt_control, list)
             batch_size = 1
-        elif prompt is not None and isinstance(prompt, list):
-            batch_size = len(prompt)
-        else:
-            batch_size = prompt_embeds.shape[0]
+        elif prompt_instruct is not None and isinstance(prompt_instruct, list):
+            assert isinstance(prompt_control, list) and len(prompt_instruct) == len(prompt_control)
+            batch_size = len(prompt_instruct)
 
         device = self._execution_device
         # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
@@ -398,27 +399,38 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         do_classifier_free_guidance = guidance_scale > 1.0
 
         # 3. Encode input prompt
-        prompt_embeds = self._encode_prompt(
-            prompt,
+        prompt_instruct_embeds = self._encode_prompt(
+            prompt_instruct,
             device,
             num_images_per_prompt,
             do_classifier_free_guidance,
             negative_prompt,
-            prompt_embeds=prompt_embeds,
+            prompt_embeds=None,
+            negative_prompt_embeds=negative_prompt_embeds,
+        )
+
+        prompt_control_embeds = self._encode_prompt(
+            prompt_control,
+            device,
+            num_images_per_prompt,
+            do_classifier_free_guidance,
+            negative_prompt,
+            prompt_embeds=None,
             negative_prompt_embeds=negative_prompt_embeds,
         )
 
         # 4. Prepare control image
-        control_image = self.prepare_control(
-            control_image,
-            width,
-            height,
-            batch_size * num_images_per_prompt,
-            num_images_per_prompt,
-            device,
-            self.controlnet.dtype,
-            do_classifier_free_guidance
-        )
+        if control_image is not None:
+            control_image = self.prepare_control(
+                control_image,
+                width,
+                height,
+                batch_size * num_images_per_prompt,
+                num_images_per_prompt,
+                device,
+                self.controlnet.dtype,
+                do_classifier_free_guidance
+            )
 
         # 5. Preprocess image
         image = preprocess(image)
@@ -432,7 +444,7 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
             image,
             batch_size,
             num_images_per_prompt,
-            prompt_embeds.dtype,
+            prompt_instruct_embeds.dtype,
             device,
             do_classifier_free_guidance,
             generator,
@@ -445,7 +457,7 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
             num_channels_latents,
             height,
             width,
-            prompt_embeds.dtype,
+            prompt_instruct_embeds.dtype,
             device,
             generator,
             latents,
@@ -464,20 +476,23 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
                 image_latent_model_input = torch.cat([latent_model_input, image_latents], dim=1)
 
                 # controlnet(s) inference
-                down_block_res_samples, mid_block_res_sample = self.controlnet(
-                    latent_model_input,
-                    t,
-                    encoder_hidden_states=prompt_embeds,
-                    controlnet_cond=control_image,
-                    conditioning_scale=controlnet_conditioning_scale,
-                    return_dict=False,
-                )
+                if control_image is not None:
+                    down_block_res_samples, mid_block_res_sample = self.controlnet(
+                        latent_model_input,
+                        t,
+                        encoder_hidden_states=prompt_control_embeds,
+                        controlnet_cond=control_image,
+                        conditioning_scale=controlnet_conditioning_scale,
+                        return_dict=False,
+                    )
+                else:
+                    down_block_res_samples, mid_block_res_sample = None, None
 
                 # predict the noise residual
                 noise_pred = self.unet(
                     image_latent_model_input,
                     t,
-                    encoder_hidden_states=prompt_embeds,
+                    encoder_hidden_states=prompt_instruct_embeds,
                     cross_attention_kwargs=cross_attention_kwargs,
                     down_block_additional_residuals=down_block_res_samples,
                     mid_block_additional_residual=mid_block_res_sample,
@@ -516,7 +531,7 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
             image = self.decode_latents(latents)
 
             # 9. Run safety checker
-            image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype)
+            image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_instruct_embeds.dtype)
 
             # 10. Convert to PIL
             image = self.numpy_to_pil(image)
@@ -525,7 +540,7 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
             image = self.decode_latents(latents)
 
             # 9. Run safety checker
-            image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_embeds.dtype)
+            image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_instruct_embeds.dtype)
 
         # Offload last model to CPU
         if hasattr(self, "final_offload_hook") and self.final_offload_hook is not None:
