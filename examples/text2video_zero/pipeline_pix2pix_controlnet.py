@@ -32,6 +32,7 @@ from diffusers.utils import (
     replace_example_docstring,
 )
 from diffusers.pipelines import StableDiffusionControlNetPipeline
+from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_controlnet import MultiControlNetModel
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import StableDiffusionPipelineOutput
 from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
 
@@ -77,7 +78,7 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         requires_safety_checker: bool = True,
     ):
         super().__init__(
-            vae= vae,
+            vae=vae,
             text_encoder=text_encoder,
             tokenizer=tokenizer,
             unet=unet,
@@ -103,17 +104,6 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
                 "Make sure to define a feature extractor when loading {self.__class__} if you want to use the safety"
                 " checker. If you do not want to use the safety checker, you can pass `'safety_checker=None'` instead."
             )
-
-        self.register_modules(
-            vae=vae,
-            text_encoder=text_encoder,
-            tokenizer=tokenizer,
-            unet=unet,
-            controlnet=controlnet,
-            scheduler=scheduler,
-            safety_checker=safety_checker,
-            feature_extractor=feature_extractor,
-        )
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         self.register_to_config(requires_safety_checker=requires_safety_checker)
 
@@ -372,17 +362,18 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         height, width = self._default_height_width(height, width, image)
 
         # 1. Check inputs. Raise error if not correct
-        self.check_inputs(
-            prompt_instruct,
-            image,
-            height,
-            width,
-            callback_steps,
-            negative_prompt,
-            None,
-            negative_prompt_embeds,
-            controlnet_conditioning_scale,
-        )
+        if control_image is not None:
+            self.check_inputs(
+                prompt_instruct,
+                control_image,
+                height,
+                width,
+                callback_steps,
+                negative_prompt,
+                None,
+                negative_prompt_embeds,
+                controlnet_conditioning_scale,
+            )
 
         # 2. Define call parameters
         if prompt_instruct is not None and isinstance(prompt_instruct, str):
@@ -397,6 +388,9 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
+
+        if isinstance(self.controlnet, MultiControlNetModel) and isinstance(controlnet_conditioning_scale, float):
+            controlnet_conditioning_scale = [controlnet_conditioning_scale] * len(self.controlnet.nets)
 
         # 3. Encode input prompt
         prompt_instruct_embeds = self._encode_prompt(
@@ -421,16 +415,37 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
 
         # 4. Prepare control image
         if control_image is not None:
-            control_image = self.prepare_control(
-                control_image,
-                width,
-                height,
-                batch_size * num_images_per_prompt,
-                num_images_per_prompt,
-                device,
-                self.controlnet.dtype,
-                do_classifier_free_guidance
-            )
+            if isinstance(self.controlnet, ControlNetModel):
+                control_image = self.prepare_control(
+                    image=control_image,
+                    width=width,
+                    height=height,
+                    batch_size=batch_size * num_images_per_prompt,
+                    num_images_per_prompt=num_images_per_prompt,
+                    device=device,
+                    dtype=self.controlnet.dtype,
+                    do_classifier_free_guidance=do_classifier_free_guidance,
+                )
+            elif isinstance(self.controlnet, MultiControlNetModel):
+                control_images = []
+
+                for control_image_ in control_image:
+                    control_image_ = self.prepare_control(
+                        image=control_image_,
+                        width=width,
+                        height=height,
+                        batch_size=batch_size * num_images_per_prompt,
+                        num_images_per_prompt=num_images_per_prompt,
+                        device=device,
+                        dtype=self.controlnet.dtype,
+                        do_classifier_free_guidance=do_classifier_free_guidance,
+                    )
+
+                    control_images.append(control_image_)
+
+                control_image = control_images
+            else:
+                assert False
 
         # 5. Preprocess image
         image = preprocess(image)
