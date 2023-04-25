@@ -28,7 +28,7 @@ def inference_chunk(frame_ids, prompt_i, prompt_c, **kwargs):
         latents = kwargs.pop('latents')[frame_ids]
     if 'image' in kwargs:
         kwargs['image'] = kwargs['image'][frame_ids]
-    if 'control_image' in kwargs:
+    if 'control_image' in kwargs and kwargs['control_image'] is not None:
         if isinstance(kwargs['control_image'], list):
             kwargs['control_image'] = [ci[frame_ids] for ci in kwargs['control_image']]
         else:
@@ -46,32 +46,57 @@ dtype = torch.float16
 model_id = "timbrooks/instruct-pix2pix"
 
 
+test_set_path = '/home/andranik/Desktop/video test set/test set 20'
 
-test_set_path = '/home/andranik/Desktop/video test set/test set'
+prompts = [
+           "make it Anime style",
+           "make it Golden sculpture",
+           "make it Modigliani painting",
+           "make it Marble Sculpture",
+           "make it Van Gogh Starry Night style",
+           "make it 1900's style",
+           "make it Claymation",
+           "make it Watercolor style",
+           "make it Paper origami",
+           "make it Pen and ink style",
+           "make it Charcoal sketch",
+           "make it Cloudscape"
+           ]
+
 video_prompts = {
-    'full body/pexels-kindel-media-8164487-1080x1920-30fps.mp4': ['replace man with chimpanzee', 'make him iron man', 'make it Mona Lisa style', 'make it a Claymation'],
-    'full body/pexels-mart-production-7331381-2160x3840-25fps.mp4': ['make him with santa claus', 'replace man with chimpanzee', 'make it Minecraft', 'what if he were in an anime'],
-    'full body/pexels-mary-taylor-6002038-2160x3840-30fps.mp4': ['make him superman', 'make man look like terminator', 'make it Minecraft', 'make it Starry Night style'],
-    'full body/pexels-rodnae-productions-7334739-1080x1920-24fps.mp4': ['replace humans with aliens', 'replace people with marble sculptures', 'make it Van Gogh Starry Night style', 'It is now midnight'],
-    'full body/pexels-shvets-production-7197861-2160x3840-25fps.mp4': ['replace girl with bear', 'make girl a golden sculpture', 'make her Disney Moana character', 'make it a Miro painting'],
-    'full body/pexels-tony-schnagl-5528734-2160x3840-25fps.mp4':  ['make him santa astronaut', 'make him iron man', 'make him a Disney cartoon character', 'Turn this into 1900s'],
-    'multiple/pexels-cottonbro-studio-2795172-3840x2160-25fps.mp4': ['replace girls with Disney carton characters', 'make them look like golden sculptures', 'what if it was midnight', 'make it Paris'],
-    'multiple/pexels-fauxels-3253079-3840x2160-25fps.mp4': ['replace people with mortal kombat characters', 'make it Miro painting', 'make them abstract sculptures'],
-    'people back:angle/pexels-diva-plavalaguna-6985525-3840x2160-50fps.mp4': ['replace man with chimpanzee', 'make him a Disney Aladdin character', 'make it Claymation'],
-    'portrait/pexels-koolshooters-8529808-3840x2160-25fps.mp4': ['make girl a golden sculpture', 'make this Anime style', 'turn her into Anime character', 'what if it was snowing'],
-    'portrait/pexels-shvets-production-8416580-1080x1920-25fps.mp4': ['make her an egyptian sculpture', 'replace her with terminator', 'Add a beautiful sunset', 'make it anime style'],
+    'pexels-chris-galkowski-1987421-1920x1080-30fps.mp4': prompts,
+    'pexels-christopher-schultz-5147455-1080x1920-30fps.mp4': prompts,
+    'pexels-cottonbro-studio-2795172-3840x2160-25fps.mp4': prompts,
+    'pexels-cottonbro-studio-5700073-2160x4096-25fps.mp4': prompts,
+    'pexels-diva-plavalaguna-6985525-3840x2160-50fps.mp4': prompts,
+    'pexels-fauxels-3253079-3840x2160-25fps.mp4': prompts,
+    'pexels-kindel-media-8164487-1080x1920-30fps.mp4': prompts,
+    'pexels-koolshooters-8529808-3840x2160-25fps.mp4': prompts,
+    'pexels-mart-production-7331381-2160x3840-25fps.mp4': prompts,
+    'pexels-mary-taylor-6002038-2160x3840-30fps.mp4': prompts,
+    'pexels-mikhail-nilov-6981411-1920x1080-25fps.mp4': prompts,
+    'pexels-olia-danilevich-4753975-720x1280-25fps.mp4': prompts,
+    'pexels-pixabay-854963-1920x1080-30fps.mp4': prompts,
+    'pexels-rodnae-productions-7334739-1080x1920-24fps.mp4': prompts,
+    'pexels-rodnae-productions-8624901-1920x1080-30fps.mp4': prompts,
+    'pexels-shvets-production-7197861-2160x3840-25fps.mp4': prompts,
+    'pexels-shvets-production-8416580-1080x1920-25fps.mp4': prompts,
+    'pexels-taryn-elliott-9116112-3840x2160-25fps.mp4': prompts,
+    'pexels-tony-schnagl-5528734-2160x3840-25fps.mp4': prompts,
+    'pexels-zlatin-georgiev-7173031-3840x2160-25fps.mp4': prompts,
 }
 
-configuration_name = ''
 configurations = {
-    'pix2pix_all': [('openpose', pre_process_pose), ('depth', pre_process_depth), ('hed', pre_process_HED), ('canny', pre_process_canny), ('normal', pre_process_normal)],
-    'pix2pix_pose+canny':     [('openpose', pre_process_pose), ('canny', pre_process_canny)],
-    'pix2pix_pose+depth':     [('openpose', pre_process_pose), ('depth', pre_process_depth)],
-    'pix2pix_pose+HED':       [('openpose', pre_process_pose), ('hed', pre_process_HED)],
-    'pix2pix_pose+normal':    [('openpose', pre_process_pose), ('normal', pre_process_normal)],
-    'pix2pix_depth':          [('depth', pre_process_depth)],
-    'pix2pix_depth+HED':      [('depth', pre_process_depth), ('hed', pre_process_HED)],
-    # 'pix2pix_original':       [],
+    # 'pix2pix_depth+HED+normal': [('depth', pre_process_depth), ('hed', pre_process_HED), ('normal', pre_process_normal)],
+    # 'pix2pix_all': [('openpose', pre_process_pose), ('depth', pre_process_depth), ('hed', pre_process_HED), ('canny', pre_process_canny), ('normal', pre_process_normal)],
+    # 'pix2pix_canny+depth+HED+normal': [('depth', pre_process_depth), ('hed', pre_process_HED), ('canny', pre_process_canny), ('normal', pre_process_normal)],
+    # 'pix2pix_pose+canny':     [('openpose', pre_process_pose), ('canny', pre_process_canny)],
+    # 'pix2pix_pose+depth':     [('openpose', pre_process_pose), ('depth', pre_process_depth)],
+    # 'pix2pix_pose+HED':       [('openpose', pre_process_pose), ('hed', pre_process_HED)],
+    # 'pix2pix_pose+normal':    [('openpose', pre_process_pose), ('normal', pre_process_normal)],
+    # 'pix2pix_depth':          [('depth', pre_process_depth)],
+    # 'pix2pix_depth+HED':      [('depth', pre_process_depth), ('hed', pre_process_HED)],
+    'pix2pix_no_control':       [],
 }
 
 
@@ -83,7 +108,11 @@ for configuration_name in configurations:
         controlnet = ControlNetModel.from_pretrained(f"lllyasviel/sd-controlnet-{c_suffix}", torch_dtype=dtype, use_safetensors=False)
         controlnet.set_attn_processor(CrossFrameAttnProcessor(batch_size=3))
         controlnets.append(controlnet)
-    # dummy_controlnet = ControlNetModel.from_pretrained(f"lllyasviel/sd-controlnet-canny", torch_dtype=dtype, use_safetensors=False)
+
+    if len(controlnets) == 0:
+        dummy_controlnet = ControlNetModel.from_pretrained(f"lllyasviel/sd-controlnet-canny", torch_dtype=dtype, use_safetensors=False)
+        controlnets.append(dummy_controlnet)
+
     pipe = InstructPix2PixControlNetPipeline.from_pretrained(model_id,
                                                              controlnet=controlnets,
                                                              safety_checker=None,
@@ -114,6 +143,9 @@ for configuration_name in configurations:
             os.makedirs(os.path.dirname(control_save_path), exist_ok=True)
             create_video(rearrange(control, 'b c h w -> b h w c').cpu(), fps, path=control_save_path, watermark=None)
             controls.append(control)
+
+        if len(controls) == 0:
+            controls = None
 
         f, c, h, w = video.size()
 
