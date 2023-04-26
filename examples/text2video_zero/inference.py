@@ -9,6 +9,8 @@ from pipeline_pix2pix_controlnet import InstructPix2PixControlNetPipeline
 from diffusers.pipelines.text_to_video_synthesis.pipeline_text_to_video_zero import CrossFrameAttnProcessor
 from diffusers import ControlNetModel, StableDiffusionInstructPix2PixPipeline, StableDiffusionControlNetPipeline
 
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
 sys.path.insert(0, '/home/andranik/Documents/Projects/text2video/Text2Video-Zero')
 from utils import (prepare_video,
                    pre_process_canny,
@@ -54,36 +56,36 @@ prompts = [
            "make it Modigliani painting",
            "make it Marble Sculpture",
            "make it Van Gogh Starry Night style",
-           "make it 1900's style",
-           "make it Claymation",
-           "make it Watercolor style",
-           "make it Paper origami",
-           "make it Pen and ink style",
-           "make it Charcoal sketch",
-           "make it Cloudscape"
+           # "make it 1900's style",
+           # "make it Claymation",
+           # "make it Watercolor style",
+           # "make it Paper origami",
+           # "make it Pen and ink style",
+           # "make it Charcoal sketch",
+           # "make it Cloudscape"
            ]
 
 video_prompts = {
-    'pexels-chris-galkowski-1987421-1920x1080-30fps.mp4': prompts,
-    'pexels-christopher-schultz-5147455-1080x1920-30fps.mp4': prompts,
+    # 'pexels-chris-galkowski-1987421-1920x1080-30fps.mp4': prompts,
+    # 'pexels-christopher-schultz-5147455-1080x1920-30fps.mp4': prompts,
     'pexels-cottonbro-studio-2795172-3840x2160-25fps.mp4': prompts,
     'pexels-cottonbro-studio-5700073-2160x4096-25fps.mp4': prompts,
     'pexels-diva-plavalaguna-6985525-3840x2160-50fps.mp4': prompts,
     'pexels-fauxels-3253079-3840x2160-25fps.mp4': prompts,
-    'pexels-kindel-media-8164487-1080x1920-30fps.mp4': prompts,
-    'pexels-koolshooters-8529808-3840x2160-25fps.mp4': prompts,
-    'pexels-mart-production-7331381-2160x3840-25fps.mp4': prompts,
-    'pexels-mary-taylor-6002038-2160x3840-30fps.mp4': prompts,
-    'pexels-mikhail-nilov-6981411-1920x1080-25fps.mp4': prompts,
-    'pexels-olia-danilevich-4753975-720x1280-25fps.mp4': prompts,
-    'pexels-pixabay-854963-1920x1080-30fps.mp4': prompts,
-    'pexels-rodnae-productions-7334739-1080x1920-24fps.mp4': prompts,
-    'pexels-rodnae-productions-8624901-1920x1080-30fps.mp4': prompts,
-    'pexels-shvets-production-7197861-2160x3840-25fps.mp4': prompts,
-    'pexels-shvets-production-8416580-1080x1920-25fps.mp4': prompts,
-    'pexels-taryn-elliott-9116112-3840x2160-25fps.mp4': prompts,
-    'pexels-tony-schnagl-5528734-2160x3840-25fps.mp4': prompts,
-    'pexels-zlatin-georgiev-7173031-3840x2160-25fps.mp4': prompts,
+    # 'pexels-kindel-media-8164487-1080x1920-30fps.mp4': prompts,
+    # 'pexels-koolshooters-8529808-3840x2160-25fps.mp4': prompts,
+    # 'pexels-mart-production-7331381-2160x3840-25fps.mp4': prompts,
+    # 'pexels-mary-taylor-6002038-2160x3840-30fps.mp4': prompts,
+    # 'pexels-mikhail-nilov-6981411-1920x1080-25fps.mp4': prompts,
+    # 'pexels-olia-danilevich-4753975-720x1280-25fps.mp4': prompts,
+    # 'pexels-pixabay-854963-1920x1080-30fps.mp4': prompts,
+    # 'pexels-rodnae-productions-7334739-1080x1920-24fps.mp4': prompts,
+    # 'pexels-rodnae-productions-8624901-1920x1080-30fps.mp4': prompts,
+    # 'pexels-shvets-production-7197861-2160x3840-25fps.mp4': prompts,
+    # 'pexels-shvets-production-8416580-1080x1920-25fps.mp4': prompts,
+    # 'pexels-taryn-elliott-9116112-3840x2160-25fps.mp4': prompts,
+    # 'pexels-tony-schnagl-5528734-2160x3840-25fps.mp4': prompts,
+    # 'pexels-zlatin-georgiev-7173031-3840x2160-25fps.mp4': prompts,
 }
 
 configurations = {
@@ -96,7 +98,7 @@ configurations = {
     # 'pix2pix_pose+normal':    [('openpose', pre_process_pose), ('normal', pre_process_normal)],
     # 'pix2pix_depth':          [('depth', pre_process_depth)],
     # 'pix2pix_depth+HED':      [('depth', pre_process_depth), ('hed', pre_process_HED)],
-    'pix2pix_no_control':       [],
+    'pix2pix_depth+L1':    [('depth', pre_process_depth)],
 }
 
 
@@ -128,7 +130,7 @@ for configuration_name in configurations:
                                    device,
                                    dtype,
                                    False,
-                                   start_t=0, end_t=5, output_fps=10)
+                                   start_t=0, end_t=1, output_fps=10)
         video_normalized = video / 127.5 - 1.0
 
         # save original video
@@ -149,20 +151,19 @@ for configuration_name in configurations:
 
         f, c, h, w = video.size()
 
-        latents = torch.randn((1, 4, h // 8, w // 8), dtype=dtype, device=device).repeat(f, 1, 1, 1)
+        seed = 22
+        g.manual_seed(seed)
+        latents = torch.randn((1, 4, h // 8, w // 8), dtype=dtype, device=device, generator=g).repeat(f, 1, 1, 1)
 
-        chunk_size = 16
-        seed = 0
+        chunk_size = f+1
         chunk_ids = np.arange(0, f, chunk_size - 1)
-
         for prompt_instruct in video_prompts[video_name]:
             result = []
-
             prompt_control = prompt_instruct
             for i in range(len(chunk_ids)):
                 ch_start = chunk_ids[i]
                 ch_end = f if i == len(chunk_ids) - 1 else chunk_ids[i + 1]
-                frame_ids = [0] + list(range(ch_start, ch_end))
+                frame_ids = list(range(ch_start, ch_end))
                 g.manual_seed(seed)
                 print(f'Processing chunk {i + 1} / {len(chunk_ids)}')
                 result.append(inference_chunk(frame_ids=frame_ids,
@@ -175,8 +176,10 @@ for configuration_name in configurations:
                                               latents=latents,
                                               controlnet_conditioning_scale=1.0,
                                               generator=g,
-                                              output_type='numpy'
-                                              ).images[1:])
+                                              output_type='numpy',
+                                              classifier_guidance_scale=list(np.linspace(200, 0, 20)),
+                                              # classifier_guidance_scale=0.0,
+                                              ).images)
             result = np.concatenate(result)
             out_path = os.path.join('outputs', configuration_name, os.path.splitext(video_name)[0], f'{prompt_instruct}.mp4')
             create_video(result, fps, path=out_path, watermark=None)

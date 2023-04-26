@@ -36,6 +36,8 @@ from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_controlnet i
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import StableDiffusionPipelineOutput
 from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
 
+from torch.nn import MSELoss, L1Loss
+
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -332,7 +334,41 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
 
         return image
 
-    @torch.no_grad()
+    def latents_to_x0(self, model_output, timestep: int, sample):
+        # 2. compute alphas, betas
+        alpha_prod_t = self.scheduler.alphas_cumprod[timestep]
+        beta_prod_t = 1 - alpha_prod_t
+
+        # 3. compute predicted original sample from predicted noise also called
+        # "predicted x_0" of formula (12) from https://arxiv.org/pdf/2010.02502.pdf
+        if self.scheduler.config.prediction_type == "epsilon":
+            pred_original_sample = (sample - beta_prod_t ** (0.5) * model_output) / alpha_prod_t ** (0.5)
+        elif self.scheduler.config.prediction_type == "sample":
+            pred_original_sample = model_output
+        elif self.scheduler.config.prediction_type == "v_prediction":
+            pred_original_sample = (alpha_prod_t ** 0.5) * sample - (beta_prod_t ** 0.5) * model_output
+        else:
+            raise ValueError(
+                f"prediction_type given as {self.scheduler.config.prediction_type} must be one of `epsilon`, `sample`, or"
+                " `v_prediction`"
+            )
+        return pred_original_sample
+
+    def get_l2_guidance_grads(self, noise_pred, t, latents):
+        t = int(t.item())
+        latents.requires_grad = True
+        pred_x0 = self.latents_to_x0(noise_pred, t, latents)
+        f, c, h, w = pred_x0.size()
+        grads = torch.zeros_like(latents)
+        # coeffs = torch.linspace(0, 1, f, device=latents.device, dtype=latents.dtype)
+        # coeffs = coeffs ** 0.5
+        # coeffs /= coeffs.sum()
+        for ind in range(1, f):
+            L1Loss()(pred_x0[ind], pred_x0[ind-1]).backward(retain_graph=True)
+            grads[ind] = latents.grad[ind]
+        return grads
+
+    # @torch.no_grad()
     def __call__(
         self,
         prompt_instruct: Union[str, List[str]] = None,
@@ -344,6 +380,7 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         num_inference_steps: int = 50,
         guidance_scale: float = 7.5,
         image_guidance_scale: float = 1.5,
+        classifier_guidance_scale: Optional[Union[float, List[float]]] = 0.0,
         negative_prompt: Optional[Union[str, List[str]]] = None,
         num_images_per_prompt: Optional[int] = 1,
         eta: float = 0.0,
@@ -455,15 +492,16 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         timesteps = self.scheduler.timesteps
 
         # 5. Prepare Image latents
-        image_latents = self.prepare_image_latents(
-            image,
-            batch_size,
-            num_images_per_prompt,
-            prompt_instruct_embeds.dtype,
-            device,
-            do_classifier_free_guidance,
-            generator,
-        )
+        with torch.no_grad():
+            image_latents = self.prepare_image_latents(
+                image,
+                batch_size,
+                num_images_per_prompt,
+                prompt_instruct_embeds.dtype,
+                device,
+                do_classifier_free_guidance,
+                generator,
+            )
 
         # 6. Prepare latent variables
         num_channels_latents = self.vae.config.latent_channels
@@ -478,6 +516,13 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
             latents,
         )
 
+        if isinstance(classifier_guidance_scale, float) or isinstance(classifier_guidance_scale, int):
+            classifier_guidance_scale = [classifier_guidance_scale] * len(timesteps)
+        elif isinstance(classifier_guidance_scale, list):
+            classifier_guidance_scale.extend([0]*(len(timesteps) - len(classifier_guidance_scale)))
+        else:
+            raise "Not supported classifier_guidance_scale type"
+
         # 7. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
@@ -490,28 +535,29 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
                 image_latent_model_input = torch.cat([latent_model_input, image_latents], dim=1)
 
-                # controlnet(s) inference
-                if control_image is not None:
-                    down_block_res_samples, mid_block_res_sample = self.controlnet(
-                        latent_model_input,
-                        t,
-                        encoder_hidden_states=prompt_control_embeds,
-                        controlnet_cond=control_image,
-                        conditioning_scale=controlnet_conditioning_scale,
-                        return_dict=False,
-                    )
-                else:
-                    down_block_res_samples, mid_block_res_sample = None, None
+                with torch.no_grad():
+                    # controlnet(s) inference
+                    if control_image is not None:
+                        down_block_res_samples, mid_block_res_sample = self.controlnet(
+                            latent_model_input,
+                            t,
+                            encoder_hidden_states=prompt_control_embeds,
+                            controlnet_cond=control_image,
+                            conditioning_scale=controlnet_conditioning_scale,
+                            return_dict=False,
+                        )
+                    else:
+                        down_block_res_samples, mid_block_res_sample = None, None
 
-                # predict the noise residual
-                noise_pred = self.unet(
-                    image_latent_model_input,
-                    t,
-                    encoder_hidden_states=prompt_instruct_embeds,
-                    cross_attention_kwargs=cross_attention_kwargs,
-                    down_block_additional_residuals=down_block_res_samples,
-                    mid_block_additional_residual=mid_block_res_sample,
-                ).sample
+                    # predict the noise residual
+                    noise_pred = self.unet(
+                        image_latent_model_input,
+                        t,
+                        encoder_hidden_states=prompt_instruct_embeds,
+                        cross_attention_kwargs=cross_attention_kwargs,
+                        down_block_additional_residuals=down_block_res_samples,
+                        mid_block_additional_residual=mid_block_res_sample,
+                    ).sample
 
                 # perform guidance
                 if do_classifier_free_guidance:
@@ -523,7 +569,12 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
                     )
 
                 # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+                latents_prev = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+                if abs(classifier_guidance_scale[i]) > 1e-5:
+                    guidance = self.get_l2_guidance_grads(noise_pred, t, latents)
+                    latents = latents_prev - classifier_guidance_scale[i] * guidance / (guidance.norm() + 1e-7)
+                else:
+                    latents = latents_prev
 
                 # call the callback, if provided
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
@@ -531,31 +582,33 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
                     if callback is not None and i % callback_steps == 0:
                         callback(i, t, latents)
 
+        latents = latents.detach()
         # If we do sequential model offloading, let's offload unet and controlnet
         # manually for max memory savings
-        if hasattr(self, "final_offload_hook") and self.final_offload_hook is not None:
-            self.unet.to("cpu")
-            self.controlnet.to("cpu")
-            torch.cuda.empty_cache()
+        with torch.no_grad():
+            if hasattr(self, "final_offload_hook") and self.final_offload_hook is not None:
+                self.unet.to("cpu")
+                self.controlnet.to("cpu")
+                torch.cuda.empty_cache()
 
-        if output_type == "latent":
-            image = latents
-            has_nsfw_concept = None
-        elif output_type == "pil":
-            # 8. Post-processing
-            image = self.decode_latents(latents)
+            if output_type == "latent":
+                image = latents
+                has_nsfw_concept = None
+            elif output_type == "pil":
+                # 8. Post-processing
+                image = self.decode_latents(latents)
 
-            # 9. Run safety checker
-            image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_instruct_embeds.dtype)
+                # 9. Run safety checker
+                image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_instruct_embeds.dtype)
 
-            # 10. Convert to PIL
-            image = self.numpy_to_pil(image)
-        else:
-            # 8. Post-processing
-            image = self.decode_latents(latents)
+                # 10. Convert to PIL
+                image = self.numpy_to_pil(image)
+            else:
+                # 8. Post-processing
+                image = self.decode_latents(latents)
 
-            # 9. Run safety checker
-            image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_instruct_embeds.dtype)
+                # 9. Run safety checker
+                image, has_nsfw_concept = self.run_safety_checker(image, device, prompt_instruct_embeds.dtype)
 
         # Offload last model to CPU
         if hasattr(self, "final_offload_hook") and self.final_offload_hook is not None:
