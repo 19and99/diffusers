@@ -36,10 +36,74 @@ from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_controlnet i
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import StableDiffusionPipelineOutput
 from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
 
-from torch.nn import MSELoss, L1Loss
+from torch.nn import MSELoss, L1Loss, functional as F
+from torch.nn.functional import grid_sample
+import torchvision.transforms as T
+
+import argparse
+import sys
+from einops import rearrange
+sys.path.insert(0, '/home/andranik/Documents/Projects/text2video/video_editing/Tune-A-Video/tuneavideo/thirdparty/RAFT/core')
+from raft import RAFT
+from utils import flow_viz
+sys.path.remove('/home/andranik/Documents/Projects/text2video/video_editing/Tune-A-Video/tuneavideo/thirdparty/RAFT/core')
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
+
+def coords_grid(batch, ht, wd, device):
+    coords = torch.meshgrid(torch.arange(ht, device=device), torch.arange(wd, device=device))
+    coords = torch.stack(coords[::-1], dim=0).float()
+    return coords[None].repeat(batch, 1, 1, 1)
+
+
+def warp_latents(latents, reference_flow):
+    if len(latents.size()) == 3:
+        latents = latents[None]
+        reference_flow = reference_flow[None]
+    _, _, H, W = reference_flow.size()
+    f, c, h, w = latents.size()
+    coords0 = coords_grid(f, H, W, device=latents.device).to(latents.dtype)
+    coords_t0 = coords0 + reference_flow
+
+    coords_t0[:, 0] /= W
+    coords_t0[:, 1] /= H
+    coords_t0 = coords_t0 * 2.0 - 1.0
+
+    coords_t0 = T.Resize((h, w))(coords_t0)
+    coords_t0 = rearrange(coords_t0, 'f c h w -> f h w c')
+    warped = grid_sample(latents, coords_t0,
+                         mode='nearest', padding_mode='reflection')
+    return warped
+
+def viz_flow(optical_flow):
+    from torchvision.utils import save_image
+
+    for i, flo in enumerate(optical_flow):
+        flo = flo.permute(1, 2, 0).cpu().numpy()
+        a = flow_viz.flow_to_image(flo)
+        save_image(torch.tensor(a.transpose(2, 0, 1)).to(torch.float32) / 255.0, f'{i}.png')
+
+
+class InputPadder:
+    """ Pads images such that dimensions are divisible by 8 """
+    def __init__(self, dims, mode='sintel'):
+        self.ht, self.wd = dims[-2:]
+        pad_ht = (((self.ht // 8) + 1) * 8 - self.ht) % 8
+        pad_wd = (((self.wd // 8) + 1) * 8 - self.wd) % 8
+        if mode == 'sintel':
+            self._pad = [pad_wd//2, pad_wd - pad_wd//2, pad_ht//2, pad_ht - pad_ht//2]
+        else:
+            self._pad = [pad_wd//2, pad_wd - pad_wd//2, 0, pad_ht]
+
+    def pad(self, *inputs):
+        return [F.pad(x, self._pad, mode='replicate') for x in inputs]
+
+    def unpad(self, x):
+        ht, wd = x.shape[-2:]
+        c = [self._pad[2], ht-self._pad[3], self._pad[0], wd-self._pad[1]]
+        return x[..., c[0]:c[1], c[2]:c[3]]
 
 
 # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img.preprocess
@@ -109,6 +173,30 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         self.register_to_config(requires_safety_checker=requires_safety_checker)
 
+        self.init_flow_model()
+
+    def init_flow_model(self):
+        args = argparse.Namespace()
+        args.small = False
+        args.mixed_precision = (self.unet.dtype == torch.float16)
+        args.model = '/home/andranik/Documents/Projects/text2video/video_editing/Tune-A-Video/' \
+                     'tuneavideo/thirdparty/RAFT/models/raft-things.pth'
+        self.flow_model = torch.nn.DataParallel(RAFT(args))
+        self.flow_model.load_state_dict(torch.load(args.model))
+        self.flow_model = self.flow_model.module
+        self.flow_model.eval()
+        self.flow_num_iter = 30
+
+    def get_optical_flow(self, images):
+        self.flow_model.to(self._execution_device)
+        padder = InputPadder(images.size()[1:])
+        images_padded = padder.pad(*images.chunk(images.size()[0]))
+        images_padded = torch.cat(images_padded)
+        images_padded = (images_padded + 1.0) * 127.5
+        frame_prev = images_padded[:-1]
+        frame_curr = images_padded[1:]
+        _, flow_up_12 = self.flow_model(frame_curr, frame_prev, iters=self.flow_num_iter, test_mode=True)
+        return flow_up_12.to(images.dtype)
 
     def _encode_prompt(
         self,
@@ -354,18 +442,27 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
             )
         return pred_original_sample
 
-    def get_guided_latents(self, noise_pred, t, latents, latents_prev, classifier_guidance_scale):
+    def get_l1_guided_latents(self, noise_pred, t, latents, latents_prev, classifier_guidance_scale):
         t = int(t.item())
         latents.requires_grad = True
         pred_x0 = self.latents_to_x0(noise_pred, t, latents)
         f, c, h, w = pred_x0.size()
         grads = torch.zeros_like(latents)
-        # coeffs = torch.linspace(0, 1, f, device=latents.device, dtype=latents.dtype)
-        # coeffs = coeffs ** 0.5
-        # coeffs /= coeffs.sum()
         for ind in range(1, f):
             L1Loss()(pred_x0[ind], pred_x0[ind-1]).backward(retain_graph=True)
             grads[ind] = latents.grad[ind]
+        return latents_prev - classifier_guidance_scale * grads / (grads.norm() + 1e-7)
+
+    def get_flow_guided_latents(self, noise_pred, t, latents, latents_prev, classifier_guidance_scale, optical_flow):
+        t = int(t.item())
+        latents.requires_grad = True
+        pred_x0 = self.latents_to_x0(noise_pred, t, latents)
+        f, c, h, w = pred_x0.size()
+        grads = torch.zeros_like(latents)
+        for ind in range(1, f):
+            L1Loss()(pred_x0[ind], warp_latents(pred_x0[ind-1], optical_flow[ind-1])).backward(retain_graph=True)
+            grads[ind] = latents.grad[ind]
+        # return torch.cat((latents_prev[0:1], warp_latents(latents_prev[:-1], optical_flow)))
         return latents_prev - classifier_guidance_scale * grads / (grads.norm() + 1e-7)
 
     # @torch.no_grad()
@@ -503,6 +600,8 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
                 generator,
             )
 
+            optical_flow = self.get_optical_flow(image)
+
         # 6. Prepare latent variables
         num_channels_latents = self.vae.config.latent_channels
         latents = self.prepare_latents(
@@ -571,7 +670,7 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
                 # compute the previous noisy sample x_t -> x_t-1
                 latents_prev = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
                 if abs(classifier_guidance_scale[i]) > 1e-5:
-                    latents = self.get_guided_latents(noise_pred, t, latents, latents_prev, classifier_guidance_scale[i])
+                    latents = self.get_flow_guided_latents(noise_pred, t, latents, latents_prev, classifier_guidance_scale[i], optical_flow)
                 else:
                     latents = latents_prev
 

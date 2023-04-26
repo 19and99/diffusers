@@ -12,13 +12,13 @@ from diffusers import ControlNetModel, StableDiffusionInstructPix2PixPipeline, S
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 sys.path.insert(0, '/home/andranik/Documents/Projects/text2video/Text2Video-Zero')
-from utils import (prepare_video,
-                   pre_process_canny,
-                   pre_process_pose,
-                   pre_process_depth,
-                   pre_process_HED,
-                   pre_process_normal,
-                   create_video)
+from utils1 import (prepare_video,
+                    pre_process_canny,
+                    pre_process_pose,
+                    pre_process_depth,
+                    pre_process_HED,
+                    pre_process_normal,
+                    create_video)
 sys.path.remove('/home/andranik/Documents/Projects/text2video/Text2Video-Zero')
 
 
@@ -51,11 +51,11 @@ model_id = "timbrooks/instruct-pix2pix"
 test_set_path = '/home/andranik/Desktop/video test set/test set 20'
 
 prompts = [
-           "make it Anime style",
-           "make it Golden sculpture",
+           # "make it Anime style",
+           # "make it Golden sculpture",
            "make it Modigliani painting",
-           "make it Marble Sculpture",
-           "make it Van Gogh Starry Night style",
+           # "make it Marble Sculpture",
+           # "make it Van Gogh Starry Night style",
            # "make it 1900's style",
            # "make it Claymation",
            # "make it Watercolor style",
@@ -68,10 +68,10 @@ prompts = [
 video_prompts = {
     # 'pexels-chris-galkowski-1987421-1920x1080-30fps.mp4': prompts,
     # 'pexels-christopher-schultz-5147455-1080x1920-30fps.mp4': prompts,
-    'pexels-cottonbro-studio-2795172-3840x2160-25fps.mp4': prompts,
-    'pexels-cottonbro-studio-5700073-2160x4096-25fps.mp4': prompts,
+    # 'pexels-cottonbro-studio-2795172-3840x2160-25fps.mp4': prompts,
+    # 'pexels-cottonbro-studio-5700073-2160x4096-25fps.mp4': prompts,
     'pexels-diva-plavalaguna-6985525-3840x2160-50fps.mp4': prompts,
-    'pexels-fauxels-3253079-3840x2160-25fps.mp4': prompts,
+    # 'pexels-fauxels-3253079-3840x2160-25fps.mp4': prompts,
     # 'pexels-kindel-media-8164487-1080x1920-30fps.mp4': prompts,
     # 'pexels-koolshooters-8529808-3840x2160-25fps.mp4': prompts,
     # 'pexels-mart-production-7331381-2160x3840-25fps.mp4': prompts,
@@ -98,7 +98,7 @@ configurations = {
     # 'pix2pix_pose+normal':    [('openpose', pre_process_pose), ('normal', pre_process_normal)],
     # 'pix2pix_depth':          [('depth', pre_process_depth)],
     # 'pix2pix_depth+HED':      [('depth', pre_process_depth), ('hed', pre_process_HED)],
-    'pix2pix_depth+L1':    [('depth', pre_process_depth)],
+    'pix2pix_no_control+L1':    [],
 }
 
 
