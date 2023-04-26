@@ -354,7 +354,7 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
             )
         return pred_original_sample
 
-    def get_l2_guidance_grads(self, noise_pred, t, latents):
+    def get_guided_latents(self, noise_pred, t, latents, latents_prev, classifier_guidance_scale):
         t = int(t.item())
         latents.requires_grad = True
         pred_x0 = self.latents_to_x0(noise_pred, t, latents)
@@ -366,7 +366,7 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         for ind in range(1, f):
             L1Loss()(pred_x0[ind], pred_x0[ind-1]).backward(retain_graph=True)
             grads[ind] = latents.grad[ind]
-        return grads
+        return latents_prev - classifier_guidance_scale * grads / (grads.norm() + 1e-7)
 
     # @torch.no_grad()
     def __call__(
@@ -571,8 +571,7 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
                 # compute the previous noisy sample x_t -> x_t-1
                 latents_prev = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
                 if abs(classifier_guidance_scale[i]) > 1e-5:
-                    guidance = self.get_l2_guidance_grads(noise_pred, t, latents)
-                    latents = latents_prev - classifier_guidance_scale[i] * guidance / (guidance.norm() + 1e-7)
+                    latents = self.get_guided_latents(noise_pred, t, latents, latents_prev, classifier_guidance_scale[i])
                 else:
                     latents = latents_prev
 
