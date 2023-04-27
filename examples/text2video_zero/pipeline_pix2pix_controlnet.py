@@ -42,7 +42,7 @@ import torchvision.transforms as T
 
 import argparse
 import sys
-from einops import rearrange
+from einops import rearrange, repeat
 sys.path.insert(0, '/home/andranik/Documents/Projects/text2video/video_editing/Tune-A-Video/tuneavideo/thirdparty/RAFT/core')
 from raft import RAFT
 from utils import flow_viz
@@ -76,6 +76,45 @@ def warp_latents(latents, reference_flow):
     warped = grid_sample(latents, coords_t0,
                          mode='nearest', padding_mode='reflection')
     return warped
+
+
+@torch.no_grad()
+def get_reverse_flow(optical_flow, radius: int = 50):
+    if len(optical_flow.size()) == 3:
+        optical_flow = optical_flow[None]
+
+    F, _, H, W = optical_flow.size()
+    coords0 = coords_grid(F, H, W, device=optical_flow.device).to(optical_flow.dtype)
+    coords_t0 = coords0 + optical_flow
+    coords0_l = rearrange(coords0, 'f c h w -> f (h w) c')
+
+    reverse_coords = torch.zeros((F, H * W, 2), device=optical_flow.device, dtype=optical_flow.dtype)
+    step_size = max(H, W)
+    radius_coords_0 = coords_grid(step_size, radius, radius, device=optical_flow.device).to(optical_flow.dtype)
+    radius_coords_0[:, 0, :, :] -= radius // 2
+    radius_coords_0[:, 1, :, :] -= radius // 2
+
+    for f in range(F):
+        for i in range(0, coords0_l.size()[1], step_size):
+            ch_0 = coords0_l[f, i:i + step_size]
+            radius_coords = (radius_coords_0 + ch_0[:, :, None, None]).to(int)
+            radius_coords[:, 0, :, :] = torch.clamp(radius_coords[:, 0, :, :], 0, W - 1)
+            radius_coords[:, 1, :, :] = torch.clamp(radius_coords[:, 1, :, :], 0, H - 1)
+            ch_t0_f = coords_t0[f, :, radius_coords[:, 1], radius_coords[:, 0]]
+            ch_t0_f = rearrange(ch_t0_f, 'c l h w -> (h w) l c')
+            ch0_f = coords0[f, :, radius_coords[:, 1], radius_coords[:, 0]]
+            ch0_f = rearrange(ch0_f, 'c l h w -> (h w) l c')
+
+            ch_0 = repeat(ch_0, 'l c -> k l c', k=ch_t0_f.size()[0])
+            linear_coeff_xy = torch.clamp(1.0 - abs(ch_t0_f - ch_0), 0, 1)
+            linear_coeff = linear_coeff_xy.prod(dim=-1)
+            linear_coeff /= (linear_coeff.sum(dim=0) + 1e-5)
+            reverse_coords[f, i:i+step_size] = (ch0_f * linear_coeff[..., None]).sum(dim=0)
+
+    reverse_coords = rearrange(reverse_coords, 'f (h w) c -> f c h w', h=H)
+    return reverse_coords - coords0
+
+
 
 def viz_flow(optical_flow):
     from torchvision.utils import save_image
@@ -193,10 +232,10 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         images_padded = padder.pad(*images.chunk(images.size()[0]))
         images_padded = torch.cat(images_padded)
         images_padded = (images_padded + 1.0) * 127.5
-        frame_prev = images_padded[:-1]
+        frame_prev = images_padded[0:1].repeat(images_padded.size()[0] - 1, 1, 1, 1)
         frame_curr = images_padded[1:]
-        _, flow_up_12 = self.flow_model(frame_curr, frame_prev, iters=self.flow_num_iter, test_mode=True)
-        return flow_up_12.to(images.dtype)
+        _, flow_up_12 = self.flow_model(frame_prev, frame_curr, iters=self.flow_num_iter, test_mode=True)
+        return flow_up_12
 
     def _encode_prompt(
         self,
@@ -460,9 +499,8 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         f, c, h, w = pred_x0.size()
         grads = torch.zeros_like(latents)
         for ind in range(1, f):
-            L1Loss()(pred_x0[ind], warp_latents(pred_x0[ind-1], optical_flow[ind-1])).backward(retain_graph=True)
+            L1Loss()(pred_x0[ind][None], warp_latents(pred_x0[0], optical_flow[ind-1])).backward(retain_graph=True)
             grads[ind] = latents.grad[ind]
-        # return torch.cat((latents_prev[0:1], warp_latents(latents_prev[:-1], optical_flow)))
         return latents_prev - classifier_guidance_scale * grads / (grads.norm() + 1e-7)
 
     # @torch.no_grad()
@@ -600,7 +638,8 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
                 generator,
             )
 
-            optical_flow = self.get_optical_flow(image)
+            optical_flow = self.get_optical_flow(image).clone().detach()
+            reverse_flow = get_reverse_flow(optical_flow).to(image.dtype)
 
         # 6. Prepare latent variables
         num_channels_latents = self.vae.config.latent_channels
@@ -670,7 +709,7 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
                 # compute the previous noisy sample x_t -> x_t-1
                 latents_prev = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
                 if abs(classifier_guidance_scale[i]) > 1e-5:
-                    latents = self.get_flow_guided_latents(noise_pred, t, latents, latents_prev, classifier_guidance_scale[i], optical_flow)
+                    latents = self.get_flow_guided_latents(noise_pred, t, latents, latents_prev, classifier_guidance_scale[i], reverse_flow)
                 else:
                     latents = latents_prev
 
