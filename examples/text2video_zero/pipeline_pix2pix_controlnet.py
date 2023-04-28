@@ -232,7 +232,7 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         images_padded = padder.pad(*images.chunk(images.size()[0]))
         images_padded = torch.cat(images_padded)
         images_padded = (images_padded + 1.0) * 127.5
-        frame_prev = images_padded[0:1].repeat(images_padded.size()[0] - 1, 1, 1, 1)
+        frame_prev = images_padded[:-1] #.repeat(images_padded.size()[0] - 1, 1, 1, 1)
         frame_curr = images_padded[1:]
         _, flow_up_12 = self.flow_model(frame_prev, frame_curr, iters=self.flow_num_iter, test_mode=True)
         return flow_up_12
@@ -498,9 +498,13 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         pred_x0 = self.latents_to_x0(noise_pred, t, latents)
         f, c, h, w = pred_x0.size()
         grads = torch.zeros_like(latents)
+
+        loss = 0
         for ind in range(1, f):
-            L1Loss()(pred_x0[ind][None], warp_latents(pred_x0[0], optical_flow[ind-1])).backward(retain_graph=True)
-            grads[ind] = latents.grad[ind]
+            loss += L1Loss()(pred_x0[ind][None], warp_latents(pred_x0[ind-1], optical_flow[ind-1])) #.backward(retain_graph=True)
+            # grads[ind] = latents.grad[ind]
+        loss.backward()
+        grads = latents.grad
         return latents_prev - classifier_guidance_scale * grads / (grads.norm() + 1e-7)
 
     # @torch.no_grad()
