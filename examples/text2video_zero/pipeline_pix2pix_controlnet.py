@@ -547,6 +547,7 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         callback_steps: int = 1,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         controlnet_conditioning_scale: float = 1.0,
+        first_frame_latents=None,
     ):
         # 0. Default height and width to unet
         height, width = self._default_height_width(height, width, image)
@@ -685,8 +686,12 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
 
         # 8. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
+        last_frame_latents = []
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
+                if first_frame_latents is not None:
+                    latents[0] = first_frame_latents[i]
+                last_frame_latents.append(latents[0].detach())
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 3) if do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
@@ -738,6 +743,10 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
                     if callback is not None and i % callback_steps == 0:
                         callback(i, t, latents)
 
+        if first_frame_latents is not None:
+            latents[:1] = first_frame_latents[-1]
+        last_frame_latents.append(latents[-1].detach())
+
         latents = latents.detach()
         # If we do sequential model offloading, let's offload unet and controlnet
         # manually for max memory savings
@@ -771,6 +780,6 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
             self.final_offload_hook.offload()
 
         if not return_dict:
-            return (image, has_nsfw_concept)
+            return image, has_nsfw_concept
 
-        return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
+        return image, last_frame_latents
