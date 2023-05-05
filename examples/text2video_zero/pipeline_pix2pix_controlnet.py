@@ -513,12 +513,12 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
 
         grads = torch.zeros_like(latents)
 
-        loss = 0
+        # loss = 0
         for ind in range(1, f):
-            loss += L1Loss()(pred_x0[ind][None, :, has_reverse[ind-1]], warp_latents(pred_x0[ind-1], optical_flow[ind-1])[:, :, has_reverse[ind-1]]) #.backward(retain_graph=True)
-            # grads[ind] = latents.grad[ind]
-        loss.backward()
-        grads = latents.grad
+            L1Loss()(pred_x0[ind][None, :, has_reverse[ind-1]], warp_latents(pred_x0[ind-1], optical_flow[ind-1])[:, :, has_reverse[ind-1]]).backward(retain_graph=True)
+            grads[ind] = latents.grad[ind]
+        # loss.backward()
+        # grads = latents.grad
         return latents_prev - classifier_guidance_scale * grads / (grads.norm() + 1e-7)
 
     # @torch.no_grad()
@@ -690,8 +690,8 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if first_frame_latents is not None:
-                    latents[0] = first_frame_latents[i]
-                last_frame_latents.append(latents[0].detach())
+                    latents[0:2] = first_frame_latents[i]
+                last_frame_latents.append(latents[[0, -1]].detach())
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 3) if do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
@@ -744,8 +744,8 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
                         callback(i, t, latents)
 
         if first_frame_latents is not None:
-            latents[:1] = first_frame_latents[-1]
-        last_frame_latents.append(latents[-1].detach())
+            latents[:2] = first_frame_latents[-1]
+        last_frame_latents.append(latents[[0, -1]].detach())
 
         latents = latents.detach()
         # If we do sequential model offloading, let's offload unet and controlnet
