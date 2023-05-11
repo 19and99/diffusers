@@ -58,6 +58,7 @@ def coords_grid(batch, ht, wd, device):
     return coords[None].repeat(batch, 1, 1, 1)
 
 
+# Warp latents with given optical flow
 def warp_latents(latents, reference_flow):
     if len(latents.size()) == 3:
         latents = latents[None]
@@ -78,6 +79,7 @@ def warp_latents(latents, reference_flow):
     return warped
 
 
+# Get optical flow of F_1 -> F_0 from optical flow of F_0 -> F_1
 @torch.no_grad()
 def get_reverse_flow(optical_flow, radius: int = 50):
     if len(optical_flow.size()) == 3:
@@ -118,7 +120,7 @@ def get_reverse_flow(optical_flow, radius: int = 50):
     return reverse_coords - coords0, has_reverse
 
 
-
+# Vizualize flow
 def viz_flow(optical_flow):
     from torchvision.utils import save_image
 
@@ -217,6 +219,7 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
 
         self.init_flow_model()
 
+    # Initialize flow model
     def init_flow_model(self):
         args = argparse.Namespace()
         args.small = False
@@ -229,6 +232,8 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         self.flow_model.eval()
         self.flow_num_iter = 30
 
+
+    # Get 2-directional optical flow
     def get_optical_flow(self, images):
         self.flow_model.to(self._execution_device)
         padder = InputPadder(images.size()[1:])
@@ -465,12 +470,14 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
 
         return image
 
+    # Decode X_0
     def latents_to_img(self, latents):
         latents = 1 / self.vae.config.scaling_factor * latents
         image = self.vae.decode(latents).sample
         image = (image / 2 + 0.5).clamp(0, 1)
         return image
 
+    # Get X_0 from X_t and predicted noise
     def latents_to_x0(self, model_output, timestep: int, sample):
         # 2. compute alphas, betas
         alpha_prod_t = self.scheduler.alphas_cumprod[timestep]
@@ -491,6 +498,7 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
             )
         return pred_original_sample
 
+    # Get guided latents with L1 loss of consecutive frames
     def get_l1_guided_latents(self, noise_pred, t, latents, latents_prev, classifier_guidance_scale):
         t = int(t.item())
         latents.requires_grad = True
@@ -502,6 +510,7 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
             grads[ind] = latents.grad[ind]
         return latents_prev - classifier_guidance_scale * grads / (grads.norm() + 1e-7)
 
+    # Get guided latents with optical flow warping
     def get_flow_guided_latents(self, noise_pred, t, latents, latents_prev, classifier_guidance_scale, optical_flow, has_reverse):
         optical_flow12, optical_flow21 = optical_flow
         has_reverse12, has_reverse21 = has_reverse
