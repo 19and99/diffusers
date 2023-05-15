@@ -48,31 +48,31 @@ dtype = torch.float16
 model_id = "timbrooks/instruct-pix2pix"
 
 
-test_set_path = '/home/andranik/Desktop/video test set/test set 20'
+test_set_path = '/home/andranik/Desktop/video test set/test set 20 crop'
 
 prompts = [
-           # "make it Anime style",
-           # "make it Golden sculpture",
-           "make it Modigliani painting",
-           # "make it Marble Sculpture",
-           # "make it Van Gogh Starry Night style",
-           # "make it 1900's style",
-           # "make it Claymation",
-           # "make it Watercolor style",
-           # "make it Paper origami",
-           # "make it Pen and ink style",
-           # "make it Charcoal sketch",
-           # "make it Cloudscape"
-           ]
+    # "make it Starry Night style",
+    "make it Anime style",
+    "make it Golden sculpture",
+    "make it Modigliani painting",
+    # "make it Marble Sculpture",
+    # "make it 1900's style",
+    # "make it Claymation",
+    # "make it Watercolor style",
+    # "make it Paper origami",
+    # "make it Pen and ink style",
+    # "make it Charcoal sketch",
+    # "make it Cloudscape"
+]
 
 video_prompts = {
     # 'pexels-chris-galkowski-1987421-1920x1080-30fps.mp4': prompts,
     # 'pexels-christopher-schultz-5147455-1080x1920-30fps.mp4': prompts,
-    # 'pexels-cottonbro-studio-2795172-3840x2160-25fps.mp4': prompts,
-    # 'pexels-cottonbro-studio-5700073-2160x4096-25fps.mp4': prompts,
-    'pexels-diva-plavalaguna-6985525-3840x2160-50fps.mp4': prompts,
-    # 'pexels-fauxels-3253079-3840x2160-25fps.mp4': prompts,
-    # 'pexels-kindel-media-8164487-1080x1920-30fps.mp4': prompts,
+    'pexels-cottonbro-studio-2795172-3840x2160-25fps.mp4': prompts,
+    'pexels-cottonbro-studio-5700073-2160x4096-25fps.mp4': prompts,
+    # 'pexels-diva-plavalaguna-6985525-3840x2160-50fps.mp4': prompts,
+    'pexels-fauxels-3253079-3840x2160-25fps.mp4': prompts,
+    'pexels-kindel-media-8164487-1080x1920-30fps.mp4': prompts,
     # 'pexels-koolshooters-8529808-3840x2160-25fps.mp4': prompts,
     # 'pexels-mart-production-7331381-2160x3840-25fps.mp4': prompts,
     # 'pexels-mary-taylor-6002038-2160x3840-30fps.mp4': prompts,
@@ -98,7 +98,7 @@ configurations = {
     # 'pix2pix_pose+normal':    [('openpose', pre_process_pose), ('normal', pre_process_normal)],
     # 'pix2pix_depth':          [('depth', pre_process_depth)],
     # 'pix2pix_depth+HED':      [('depth', pre_process_depth), ('hed', pre_process_HED)],
-    'pix2pix_no_control+L1':    [],
+    'pix2pix_OF':    [('depth', pre_process_depth)],
 }
 
 
@@ -130,7 +130,7 @@ for configuration_name in configurations:
                                    device,
                                    dtype,
                                    False,
-                                   start_t=0, end_t=1, output_fps=10)
+                                   start_t=0, end_t=5, output_fps=10)
         video_normalized = video / 127.5 - 1.0
 
         # save original video
@@ -151,35 +151,39 @@ for configuration_name in configurations:
 
         f, c, h, w = video.size()
 
-        seed = 22
+        seed = 0
         g.manual_seed(seed)
         latents = torch.randn((1, 4, h // 8, w // 8), dtype=dtype, device=device, generator=g).repeat(f, 1, 1, 1)
 
-        chunk_size = f+1
+        num_inference_steps = 20
+        chunk_size = 4
         chunk_ids = np.arange(0, f, chunk_size - 1)
         for prompt_instruct in video_prompts[video_name]:
             result = []
             prompt_control = prompt_instruct
+            first_frame_latents = None
             for i in range(len(chunk_ids)):
                 ch_start = chunk_ids[i]
                 ch_end = f if i == len(chunk_ids) - 1 else chunk_ids[i + 1]
-                frame_ids = list(range(ch_start, ch_end))
+                frame_ids = [0, max(0, ch_start-1)] + list(range(ch_start, ch_end))
                 g.manual_seed(seed)
                 print(f'Processing chunk {i + 1} / {len(chunk_ids)}')
-                result.append(inference_chunk(frame_ids=frame_ids,
-                                              prompt_i=[prompt_instruct] * f,
-                                              prompt_c=[prompt_control] * f,
-                                              image=video_normalized,
-                                              control_image=controls,
-                                              num_inference_steps=20,
-                                              image_guidance_scale=1.0,
-                                              latents=latents,
-                                              controlnet_conditioning_scale=1.0,
-                                              generator=g,
-                                              output_type='numpy',
-                                              classifier_guidance_scale=list(np.linspace(200, 0, 20)),
-                                              # classifier_guidance_scale=0.0,
-                                              ).images)
+                res, first_frame_latents = inference_chunk(frame_ids=frame_ids,
+                                                           prompt_i=[prompt_instruct] * f,
+                                                           prompt_c=[prompt_control] * f,
+                                                           image=video_normalized,
+                                                           control_image=controls,
+                                                           num_inference_steps=num_inference_steps,
+                                                           image_guidance_scale=1.0,
+                                                           latents=latents,
+                                                           controlnet_conditioning_scale=1.0,
+                                                           generator=g,
+                                                           output_type='numpy',
+                                                           classifier_guidance_scale=list(np.linspace(200, 0, num_inference_steps)),
+                                                           # classifier_guidance_scale=0.0,
+                                                           first_frame_latents=first_frame_latents,
+                                                           )
+                result.append(res[2:])
             result = np.concatenate(result)
             out_path = os.path.join('outputs', configuration_name, os.path.splitext(video_name)[0], f'{prompt_instruct}.mp4')
             create_video(result, fps, path=out_path, watermark=None)
