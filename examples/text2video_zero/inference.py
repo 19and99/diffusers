@@ -48,7 +48,7 @@ dtype = torch.float16
 model_id = "timbrooks/instruct-pix2pix"
 
 
-test_set_path = '/home/andranik/Desktop/video test set/test set 20 crop'
+test_set_path = '/home/andranik/Desktop/video test set/Cannes Original Videos'
 
 prompts = [
     # "make it Starry Night style",
@@ -68,11 +68,11 @@ prompts = [
 video_prompts = {
     # 'pexels-chris-galkowski-1987421-1920x1080-30fps.mp4': prompts,
     # 'pexels-christopher-schultz-5147455-1080x1920-30fps.mp4': prompts,
-    'pexels-cottonbro-studio-2795172-3840x2160-25fps.mp4': prompts,
-    'pexels-cottonbro-studio-5700073-2160x4096-25fps.mp4': prompts,
+    # 'pexels-cottonbro-studio-2795172-3840x2160-25fps.mp4': prompts,
+    # 'pexels-cottonbro-studio-5700073-2160x4096-25fps.mp4': prompts,
     # 'pexels-diva-plavalaguna-6985525-3840x2160-50fps.mp4': prompts,
-    'pexels-fauxels-3253079-3840x2160-25fps.mp4': prompts,
-    'pexels-kindel-media-8164487-1080x1920-30fps.mp4': prompts,
+    # 'pexels-fauxels-3253079-3840x2160-25fps.mp4': prompts,
+    # 'pexels-kindel-media-8164487-1080x1920-30fps.mp4': prompts,
     # 'pexels-koolshooters-8529808-3840x2160-25fps.mp4': prompts,
     # 'pexels-mart-production-7331381-2160x3840-25fps.mp4': prompts,
     # 'pexels-mary-taylor-6002038-2160x3840-30fps.mp4': prompts,
@@ -86,6 +86,18 @@ video_prompts = {
     # 'pexels-taryn-elliott-9116112-3840x2160-25fps.mp4': prompts,
     # 'pexels-tony-schnagl-5528734-2160x3840-25fps.mp4': prompts,
     # 'pexels-zlatin-georgiev-7173031-3840x2160-25fps.mp4': prompts,
+
+
+    # 'make it modilgiani style.mp4': ['make it Modigliani painting'],
+    # 'make it pen and ink style.mp4': ['make it Pen and ink style'],
+    # 'make it Van Gogh Starry night_make it pen and ink_make it modilgiani style.MOV': ['make it Starry Night style', 'make it Pen and ink style', 'make it Modigliani painting'],
+    # "j-hope 'on the street (with J. Cole)' Official MV.mp4": ['make it Starry Night style', 'make it Pen and ink style', 'make it Watercolor style']
+    # 'make it watercolor.mp4': ['make it Watercolor style']
+    # '[4K] PARIS 2023 1 Hour Aerial Drone Relaxation Film UHD _ FRANCE.mp4': ['make it Claymation']
+
+    '1900s style, watercolor 2s - 15s.mp4': ['make it Anime style', 'make it Watercolor style', 'make it paper origami'],
+    'anime, picasso 4:27-4:30.mp4': ['make it Anime style', 'make it Watercolor style'],
+    'Starry night, oil painting 13-23s.mp4': ['make it Starry Night style', 'make it oil painting']
 }
 
 configurations = {
@@ -126,11 +138,11 @@ for configuration_name in configurations:
     for video_name in video_prompts:
         video_path = os.path.join(test_set_path, video_name)
         video, fps = prepare_video(video_path,
-                                   512,
+                                   768,
                                    device,
                                    dtype,
                                    False,
-                                   start_t=0, end_t=5, output_fps=10)
+                                   start_t=0, end_t=-1, output_fps=15)
         video_normalized = video / 127.5 - 1.0
 
         # save original video
@@ -156,7 +168,7 @@ for configuration_name in configurations:
         latents = torch.randn((1, 4, h // 8, w // 8), dtype=dtype, device=device, generator=g).repeat(f, 1, 1, 1)
 
         num_inference_steps = 20
-        chunk_size = 4
+        chunk_size = 3
         chunk_ids = np.arange(0, f, chunk_size - 1)
         for prompt_instruct in video_prompts[video_name]:
             result = []

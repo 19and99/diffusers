@@ -707,8 +707,8 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if first_frame_latents is not None:
-                    latents[0:2] = first_frame_latents[i]
-                last_frame_latents.append(latents[[0, -1]].detach())
+                    latents[0:1] = first_frame_latents[i]
+                last_frame_latents.append(latents[[-1]].detach())
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 3) if do_classifier_free_guidance else latents
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
@@ -761,8 +761,8 @@ class InstructPix2PixControlNetPipeline(StableDiffusionControlNetPipeline):
                         callback(i, t, latents)
 
         if first_frame_latents is not None:
-            latents[:2] = first_frame_latents[-1]
-        last_frame_latents.append(latents[[0, -1]].detach())
+            latents[0:1] = first_frame_latents[-1]
+        last_frame_latents.append(latents[[-1]].detach())
 
         latents = latents.detach()
         # If we do sequential model offloading, let's offload unet and controlnet
